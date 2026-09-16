@@ -1,24 +1,31 @@
 
 #include "gazebo_sfm/GazeboSFM.hpp"
 
+#include <gz/common/Console.hh>
 #include <gz/plugin/Register.hh>
+#include <gz/sim/Entity.hh>
+#include <gz/sim/components/Pose.hh>
+#include <gz/sim/components/World.hh>
+#include <lightsfm/sfm.hpp>
+#include <lightsfm/vector2d.hpp>
+#include <list>
+#include <sdf/Actor.hh>
+
+using namespace std::chrono_literals;
 
 IGNITION_ADD_PLUGIN(gazebo_sfm::GazeboSFM, gz::sim::System,
                     gazebo_sfm::GazeboSFM::ISystemConfigure,
-                    gazebo_sfm::GazeboSFM::ISystemConfigure)
+                    gazebo_sfm::GazeboSFM::ISystemPreUpdate)
 
 using namespace gazebo_sfm;
 
-GazeboSFM::GazeboSFM()
+GazeboSFM::GazeboSFM() : creator{nullptr}, actor_sdf()
 {
+    ignmsg << "constructing" << std::endl;
+    create_actor_sdf();
 }
 
 GazeboSFM::~GazeboSFM()
-{
-}
-
-void GazeboSFM::PreUpdate(const gz::sim::UpdateInfo& _info,
-                          gz::sim::EntityComponentManager& ecm)
 {
 }
 
@@ -27,4 +34,135 @@ void GazeboSFM::Configure(const gz::sim::Entity& _entity,
                           gz::sim::EntityComponentManager& _ecm,
                           gz::sim::EventManager& _eventMgr)
 {
+    ignmsg << "Configuring GazeboSFM." << std::endl;
+
+    worldEntity = _ecm.EntityByComponents(gz::sim::components::World());
+
+    creator = std::make_unique<gz::sim::SdfEntityCreator>(_ecm, _eventMgr);
+
+    ensure_n_actors(2);
+
+    gz::math::Pose3d pose{};
+
+    pose.SetX(1.0);
+
+    agents[0].position.setX(1.0);
+
+    gz::sim::Actor actor{static_cast<unsigned long>(agents[0].id)};
+    actor.SetTrajectoryPose(_ecm, pose);
+
+    sfm::Goal goal1{utils::Vector2d{0.5, 3.0}, 0.4};
+    sfm::Goal goal2{utils::Vector2d{0.5, 7.0}, 0.4};
+
+    agents[0].goals = std::list<sfm::Goal>{goal1};
+    agents[1].goals = std::list<sfm::Goal>{goal2};
+
+    ignmsg << "Configured GazeboSFM." << std::endl;
+}
+
+void GazeboSFM::PreUpdate(const gz::sim::UpdateInfo& _info,
+                          gz::sim::EntityComponentManager& ecm)
+{
+    double delta_s = std::chrono::duration<double>(_info.dt).count();
+
+    sfm::SFM.computeForces(agents);
+    sfm::SFM.updatePosition(agents, delta_s);
+
+    for (auto& agent : agents)
+    {
+        // NOTE: I don't particularly like casting from signed to unsigned
+        // mind the wrapping
+        gz::sim::Actor actor{static_cast<unsigned long>(agent.id)};
+
+        gz::math::Pose3d pose{};
+
+        pose.SetX(agent.position.getX());
+        pose.SetY(agent.position.getY());
+        pose.Set(agent.position.getX(), agent.position.getY(), 0.0, 0.0, 0.0,
+                 agent.velocity.angle().toRadian());
+
+        actor.SetTrajectoryPose(ecm, pose);
+
+        // auto animTime = animTimeComp->Data() +
+        //     std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+        //     std::chrono::duration<double>(distanceTraveled *
+        //     this->dataPtr->animationXVel));
+
+        auto animTime =
+            std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                std::chrono::duration<double>(0.0));
+
+        actor.SetAnimationTime(ecm, animTime);
+
+        ecm.SetChanged(static_cast<unsigned long>(agent.id),
+                       gz::sim::components::TrajectoryPose::typeId);
+    }
+}
+
+void GazeboSFM::create_actor_sdf()
+{
+    actor_sdf.SetSkinFilename(ACTOR_FILENAME);
+    actor_sdf.SetSkinScale(1.0);
+
+    sdf::Animation anim;
+
+    // it happens that the model I'm using has the same filename for both
+    anim.SetFilename(ACTOR_FILENAME);
+    anim.SetName("walk");
+    anim.SetInterpolateX(true);
+
+    actor_sdf.AddAnimation(anim);
+    actor_sdf.SetScriptAutoStart(false);
+
+    // temp name
+    actor_sdf.SetName("John");
+
+    gz::math::Pose3d pose;
+
+    actor_sdf.SetRawPose(pose);
+}
+
+void GazeboSFM::spawn_actor()
+{
+    std::string actor_name = "pedestrian_";
+    actor_name += std::to_string(agents.size());
+
+    actor_sdf.SetName(actor_name);
+
+    gz::sim::Entity new_entity = creator->CreateEntities(&actor_sdf);
+
+    creator->SetParent(new_entity, worldEntity);
+
+    sfm::Agent new_agent{};
+
+    new_agent.id = new_entity;
+
+    agents.push_back(new_agent);
+}
+
+void GazeboSFM::remove_actor()
+{
+    ignlog << "Removing an actor..." << std::endl;
+
+    if (!agents.empty())
+    {
+        auto entity = agents.back().id;
+
+        creator->RequestRemoveEntity(entity, true);
+
+        agents.pop_back();
+    }
+}
+
+void GazeboSFM::ensure_n_actors(int n)
+{
+    // avoid wrapping
+    int diff = n - static_cast<long>(agents.size());
+
+    int steps = std::abs(diff);
+
+    for (int i{}; i < steps; i++)
+    {
+        diff < 0 ? remove_actor() : spawn_actor();
+    }
 }

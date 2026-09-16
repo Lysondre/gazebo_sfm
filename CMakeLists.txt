@@ -35,6 +35,10 @@ target_link_libraries(GazeboSFM PRIVATE
 install(
     TARGETS GazeboSFM
     DESTINATION lib/${PROJECT_NAME}
+    # ARCHIVE DESTINATION lib
+    # LIBRARY DESTINATION lib
+    # LIBRARY DESTINATION ${ignition-gazebo6_PLUGIN_PATH}
+    # RUNTIME DESTINATION bin
 )
 
 if(BUILD_TESTING)
