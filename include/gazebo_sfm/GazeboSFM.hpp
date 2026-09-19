@@ -21,6 +21,10 @@ namespace gazebo_sfm
 const std::string ACTOR_FILENAME = "https://fuel.gazebosim.org/1.0/Mingfei/"
                                    "models/actor/tip/files/meshes/walk.dae";
 
+const std::string ACTOR_STANDING_FILENAME =
+    "https://fuel.gazebosim.org/1.0/Mingfei/"
+    "models/actor/tip/files/meshes/stand.dae";
+
 class GazeboSFM : public gz::sim::System,
                   public gz::sim::ISystemConfigure,
                   public gz::sim::ISystemPreUpdate
@@ -40,6 +44,7 @@ class GazeboSFM : public gz::sim::System,
   private:
     std::unique_ptr<gz::sim::SdfEntityCreator> creator;
     std::vector<sfm::Agent> agents;
+    std::vector<double> anim_cumul;
     sdf::Actor actor_sdf;
 
     gz::sim::Entity worldEntity{gz::sim::kNullEntity};

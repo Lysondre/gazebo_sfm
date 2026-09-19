@@ -1,9 +1,12 @@
 
 #include "gazebo_sfm/GazeboSFM.hpp"
 
+#include <chrono>
 #include <gz/common/Console.hh>
 #include <gz/plugin/Register.hh>
 #include <gz/sim/Entity.hh>
+#include <gz/sim/Types.hh>
+#include <gz/sim/components/Actor.hh>
 #include <gz/sim/components/Pose.hh>
 #include <gz/sim/components/World.hh>
 #include <lightsfm/sfm.hpp>
@@ -68,11 +71,15 @@ void GazeboSFM::PreUpdate(const gz::sim::UpdateInfo& _info,
     sfm::SFM.computeForces(agents);
     sfm::SFM.updatePosition(agents, delta_s);
 
-    for (auto& agent : agents)
+    for (int i{}; i < agents.size(); i++)
     {
+        auto& agent = agents[i];
+
         // NOTE: I don't particularly like casting from signed to unsigned
         // mind the wrapping
         gz::sim::Actor actor{static_cast<unsigned long>(agent.id)};
+
+        double speed = agent.velocity.norm();
 
         gz::math::Pose3d pose{};
 
@@ -88,14 +95,41 @@ void GazeboSFM::PreUpdate(const gz::sim::UpdateInfo& _info,
         //     std::chrono::duration<double>(distanceTraveled *
         //     this->dataPtr->animationXVel));
 
-        auto animTime =
-            std::chrono::duration_cast<std::chrono::steady_clock::duration>(
-                std::chrono::duration<double>(0.0));
+        double distance_traveled = speed * delta_s;
 
-        actor.SetAnimationTime(ecm, animTime);
+        auto anim_time_comp = *actor.AnimationTime(ecm);
+        // auto anim_time_comp =
+        // ecm.Component<gz::sim::components::AnimationTime>(
+        //     static_cast<unsigned long>(agent.id));
+
+        if (speed < 0.05)
+        {
+            actor.SetAnimationName(ecm, "stand");
+            ecm.SetChanged(static_cast<unsigned long>(agent.id),
+                           gz::sim::components::AnimationName::typeId,
+                           gz::sim::ComponentState::OneTimeChange);
+        }
+        else
+        {
+            actor.SetAnimationName(ecm, "walk");
+            ecm.SetChanged(static_cast<unsigned long>(agent.id),
+                           gz::sim::components::AnimationName::typeId,
+                           gz::sim::ComponentState::OneTimeChange);
+        }
+
+        auto anim_time =
+            anim_time_comp +
+            std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                std::chrono::duration<double>(distance_traveled * 1.5));
+
+        actor.SetAnimationTime(ecm, anim_time);
 
         ecm.SetChanged(static_cast<unsigned long>(agent.id),
-                       gz::sim::components::TrajectoryPose::typeId);
+                       gz::sim::components::TrajectoryPose::typeId,
+                       gz::sim::ComponentState::OneTimeChange);
+        ecm.SetChanged(static_cast<unsigned long>(agent.id),
+                       gz::sim::components::AnimationTime::typeId,
+                       gz::sim::ComponentState::OneTimeChange);
     }
 }
 
@@ -104,15 +138,21 @@ void GazeboSFM::create_actor_sdf()
     actor_sdf.SetSkinFilename(ACTOR_FILENAME);
     actor_sdf.SetSkinScale(1.0);
 
-    sdf::Animation anim;
+    sdf::Animation walk_anim;
 
     // it happens that the model I'm using has the same filename for both
-    anim.SetFilename(ACTOR_FILENAME);
-    anim.SetName("walk");
-    anim.SetInterpolateX(true);
+    walk_anim.SetFilename(ACTOR_FILENAME);
+    walk_anim.SetName("walk");
+    walk_anim.SetInterpolateX(true);
 
-    actor_sdf.AddAnimation(anim);
-    actor_sdf.SetScriptAutoStart(false);
+    sdf::Animation stand_anim;
+
+    stand_anim.SetFilename(ACTOR_STANDING_FILENAME);
+    stand_anim.SetName("stand");
+    stand_anim.SetInterpolateX(true);
+
+    actor_sdf.AddAnimation(walk_anim);
+    actor_sdf.AddAnimation(stand_anim);
 
     // temp name
     actor_sdf.SetName("John");
@@ -138,6 +178,7 @@ void GazeboSFM::spawn_actor()
     new_agent.id = new_entity;
 
     agents.push_back(new_agent);
+    anim_cumul.push_back(0.0);
 }
 
 void GazeboSFM::remove_actor()
@@ -151,6 +192,7 @@ void GazeboSFM::remove_actor()
         creator->RequestRemoveEntity(entity, true);
 
         agents.pop_back();
+        anim_cumul.pop_back();
     }
 }
 
